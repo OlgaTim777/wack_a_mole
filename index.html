@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magic Whack-a-Mole Editor</title>
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.5); }
+        @keyframes bounce-slight {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+        .animate-bounce-slight { animation: bounce-slight 3s ease-in-out infinite; }
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef } = React;
+
+        const DEFAULT_CONFIG = {
+            global: { background: '', bgMusic: '', musicVolume: 0.5, holeImage: '', holeSize: 140, language: 'ru', holeColor: '#000000', holeOpacity: 0.7 },
+            wordStyle: { bgColor: '#ffffff', bgOpacity: 0.9, textColor: '#000000', fontFamily: 'system-ui', fontSize: 14, offsetY: -10 },
+            logic: { pointsWin: 10, pointsLose: -5, gameTime: 30 },
+            hud: {
+                score: { x: 5, y: 5, color: '#4c1d95', bgColor: '#ffffff', bgOpacity: 0.9, fontSize: 20, fontFamily: 'system-ui', width: 150 },
+                time: { x: 75, y: 5, color: '#dc2626', bgColor: '#ffffff', bgOpacity: 0.9, fontSize: 20, fontFamily: 'system-ui', width: 120 },
+                volume: { x: 40, y: 5, color: '#4c1d95', bgColor: '#ffffff', bgOpacity: 0.9, fontSize: 20, fontFamily: 'system-ui', width: 160 }
+            },
+            audio: { success: '', error: '', hit: '' },
+            spawnPoints: [
+                { id: 'sp-1', x: 20, y: 30, wordX: 20, wordY: 30, zIndex: 0, wordLayer: 'back' }, 
+                { id: 'sp-2', x: 50, y: 30, wordX: 50, wordY: 30, zIndex: 0, wordLayer: 'back' }, 
+                { id: 'sp-3', x: 80, y: 30, wordX: 80, wordY: 30, zIndex: 0, wordLayer: 'back' },
+                { id: 'sp-4', x: 35, y: 60, wordX: 35, wordY: 60, zIndex: 0, wordLayer: 'back' }, 
+                { id: 'sp-5', x: 65, y: 60, wordX: 65, wordY: 60, zIndex: 0, wordLayer: 'back' }
+            ],
+            groups: [
+                { id: 'g-1', name: 'Summer Words (Correct)', isCorrect: true, image: '', size: 100, rotation: 0, direction: 'up', speed: 1.5, words: 'Ice cream\nBeach\nSun\nHoliday', rule: '' },
+                { id: 'g-2', name: 'Music Words (Wrong)', isCorrect: false, image: '', size: 100, rotation: 0, direction: 'up', speed: 1.5, words: 'Singer\nGuitar\nBand\nConcert', rule: 'These are music words, not summer words!' }
+            ],
+            pages: {
+                start: { 
+                    title: 'Magic Words!', subtitle: 'Hit the summer words, avoid the music words!', buttonText: 'PLAY NOW',
+                    titleColor: '#ffffff', fontFamily: 'system-ui', titleFontSize: 48, subtitleFontSize: 24,
+                    btnBg: '#facc15', btnColor: '#4c1d95', btnFontSize: 24, btnPaddingX: 30, btnPaddingY: 15
+                },
+                end: { 
+                    slogan: 'Great Job!', rewardText: 'You earned a magic star!', rewardImage: '',
+                    color: '#1f2937', fontFamily: 'system-ui', sloganFontSize: 36, rewardFontSize: 18,
+                    btnBg: '#a855f7', btnColor: '#ffffff', btnFontSize: 20, btnPaddingX: 32, btnPaddingY: 12
+                }
+            }
+        };
+
+        const MagicalPanel = ({ children, className = '' }) => (
+            <div className={`bg-white/20 backdrop-blur-md border-2 border-white/40 rounded-3xl p-4 shadow-xl ${className}`}>{children}</div>
+        );
+
+        function App() {
+            const [config, setConfig] = useState(DEFAULT_CONFIG);
+            const [activeTab, setActiveTab] = useState('spawn');
+            const [editorSection, setEditorSection] = useState('global');
+            
+            const [dragging, setDragging] = useState(null);
+            const [ghostMode, setGhostMode] = useState(false);
+            const dragInfo = useRef({ active: false, startX: 0, startY: 0 });
+            const spawnCanvasRef = useRef(null);
+
+            const updateConfig = (section, field, value) => {
+                setConfig(prev => ({ ...prev, [section]: { ...prev[section], [field]: value } }));
+            };
+
+            const updateHudConfig = (element, field, value) => {
+                setConfig(prev => ({
+                    ...prev,
+                    hud: {
+                        ...prev.hud,
+                        [element]: { ...prev.hud[element], [field]: value }
+                    }
+                }));
+            };
+
+            const handleFileUpload = (e, callback) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => callback(ev.target.result);
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const handleCanvasClick = (e) => {
+                if (activeTab !== 'spawn' || dragging || dragInfo.current.active) return;
+                const rect = spawnCanvasRef.current.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * 100;
+                const y = ((e.clientY - rect.top) / rect.height) * 100;
+                setConfig(prev => ({
+                    ...prev,
+                    spawnPoints: [...prev.spawnPoints, { 
+                        id: `sp-${Date.now()}`, x, y, wordX: x, wordY: y, zIndex: 0, wordLayer: 'back' 
+                    }]
+                }));
+            };
+
+            const handlePointerDown = (id, type, e) => {
+                e.stopPropagation();
+                e.target.setPointerCapture(e.pointerId);
+                dragInfo.current = { active: false, startX: e.clientX, startY: e.clientY };
+                setDragging({ id, type });
+            };
+
+            const handlePointerMove = (e) => {
+                if (!dragging || activeTab !== 'spawn') return;
+                
+                const dx = Math.abs(e.clientX - dragInfo.current.startX);
+                const dy = Math.abs(e.clientY - dragInfo.current.startY);
+                if (dx > 3 || dy > 3) dragInfo.current.active = true;
+
+                const rect = spawnCanvasRef.current.getBoundingClientRect();
+                let x = ((e.clientX - rect.left) / rect.width) * 100;
+                let y = ((e.clientY - rect.top) / rect.height) * 100;
+                x = Math.max(0, Math.min(100, x));
+                y = Math.max(0, Math.min(100, y));
+                
+                if (dragging.type.startsWith('hud-')) {
+                    const hudEl = dragging.type.split('-')[1];
+                    updateHudConfig(hudEl, 'x', x);
+                    updateHudConfig(hudEl, 'y', y);
+                    return;
+                }
+
+                setConfig(prev => ({
+                    ...prev,
+                    spawnPoints: prev.spawnPoints.map(sp => {
+                        if (sp.id === dragging.id) {
+                            if (dragging.type === 'hole') return { ...sp, x, y };
+                            if (dragging.type === 'word') return { ...sp, wordX: x, wordY: y };
+                        }
+                        return sp;
+                    })
+                }));
+            };
+
+            const handlePointerUp = (e) => {
+                if (dragging) {
+                    if (e.target.hasPointerCapture(e.pointerId)) {
+                        e.target.releasePointerCapture(e.pointerId);
+                    }
+                    setDragging(null);
+                }
+                setTimeout(() => dragInfo.current.active = false, 50);
+            };
+
+            const updateSpawnPoint = (id, field, value) => {
+                setConfig(prev => ({
+                    ...prev,
+                    spawnPoints: prev.spawnPoints.map(sp => sp.id === id ? { ...sp, [field]: value } : sp)
+                }));
+            };
+
+            const removeSpawnPoint = (id, e) => {
+                e.stopPropagation();
+                setConfig(prev => ({ ...prev, spawnPoints: prev.spawnPoints.filter(sp => sp.id !== id) }));
+            };
+
+            const updateGroup = (id, field, value) => {
+                setConfig(prev => ({ ...prev, groups: prev.groups.map(g => g.id === id ? { ...g, [field]: value } : g) }));
+            };
+
+            const exportJSON = () => {
+                const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'game-config.json';
+                a.click(); URL.revokeObjectURL(url);
+            };
+
+            const importJSON = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => { 
+                        try { 
+                            const parsed = JSON.parse(ev.target.result);
+                            // Merge missing values to support old JSON versions
+                            const mergedHud = parsed.hud || DEFAULT_CONFIG.hud;
+                            
+                            setConfig({
+                                ...DEFAULT_CONFIG,
+                                ...parsed,
+                                hud: mergedHud,
+                                logic: { ...DEFAULT_CONFIG.logic, ...(parsed.logic || {}) },
+                                pages: {
+                                    start: { ...DEFAULT_CONFIG.pages.start, ...(parsed.pages?.start || {}) },
+                                    end: { ...DEFAULT_CONFIG.pages.end, ...(parsed.pages?.end || {}) }
+                                },
+                                global: { ...DEFAULT_CONFIG.global, ...(parsed.global || {}) },
+                                wordStyle: { ...DEFAULT_CONFIG.wordStyle, ...(parsed.wordStyle || {}) }
+                            }); 
+                        } 
+                        catch (err) { alert("Invalid JSON file"); } 
+                    };
+                    reader.readAsText(file);
+                }
+            };
+
+            const generateHTML = () => {
+                const getRgba = (hex, opacity) => {
+                    const r = parseInt((hex||'#ffffff').slice(1, 3), 16) || 255;
+                    const g = parseInt((hex||'#ffffff').slice(3, 5), 16) || 255;
+                    const b = parseInt((hex||'#ffffff').slice(5, 7), 16) || 255;
+                    return `rgba(${r}, ${g}, ${b}, ${opacity !== undefined ? opacity : 0.9})`;
+                };
+
+                const bgColorRgba = getRgba(config.wordStyle.bgColor, config.wordStyle.bgOpacity);
+                const borderColor = getRgba('#c8c8c8', config.wordStyle.bgOpacity);
+                const holeBgColorRgba = getRgba(config.global.holeColor || '#000000', config.global.holeOpacity !== undefined ? config.global.holeOpacity : 0.7);
+                const langCode = config.global.language || 'ru';
+
+                // HUD Styles
+                const scoreBg = getRgba(config.hud.score.bgColor, config.hud.score.bgOpacity);
+                const timeBg = getRgba(config.hud.time.bgColor, config.hud.time.bgOpacity);
+                const volBg = getRgba(config.hud.volume.bgColor, config.hud.volume.bgOpacity);
+
+                return `<!DOCTYPE html>
+<html lang="${langCode}">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${config.pages.start.title}</title>
+<style>
+  body { margin:0; padding:0; height:100vh; overflow:hidden; font-family:${config.pages.start.fontFamily}; background: ${config.global.background ? `url(${config.global.background}) center/cover` : 'linear-gradient(to bottom, #87CEEB, #90EE90)'}; }
+  #game-container { position:relative; width:100%; height:100%; }
+  .screen { position:absolute; top:0; left:0; width:100%; height:100%; display:none; flex-direction:column; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); backdrop-filter:blur(5px); z-index:10000; text-align:center; }
+  .screen.active { display:flex; }
+  
+  .btn-start { 
+      background: ${config.pages.start.btnBg || '#facc15'}; color: ${config.pages.start.btnColor || '#4c1d95'}; font-size: ${config.pages.start.btnFontSize || 24}px; font-family: ${config.pages.start.fontFamily};
+      padding: ${config.pages.start.btnPaddingY || 15}px ${config.pages.start.btnPaddingX || 30}px; font-weight:bold; cursor:pointer; border:none; border-bottom:4px solid rgba(0,0,0,0.2); border-radius:15px; margin-top:20px; transition:transform 0.1s; 
+  }
+  .btn-end { 
+      background: ${config.pages.end.btnBg || '#a855f7'}; color: ${config.pages.end.btnColor || '#ffffff'}; font-size: ${config.pages.end.btnFontSize || 20}px; font-family: ${config.pages.end.fontFamily};
+      padding: ${config.pages.end.btnPaddingY || 12}px ${config.pages.end.btnPaddingX || 32}px; font-weight:bold; cursor:pointer; border:none; border-bottom:4px solid rgba(0,0,0,0.2); border-radius:15px; margin-top:20px; transition:transform 0.1s; 
+  }
+  button:active { transform:translateY(4px); border-bottom:0; }
+  
+  .hud { position:absolute; top:0; left:0; width:100%; height:100%; z-index:9000; pointer-events:none; }
+  .hud-box { position:absolute; border-radius:10px; font-weight:bold; border:2px solid rgba(0,0,0,0.1); pointer-events:auto; display:flex; align-items:center; justify-content:center; gap:8px; padding:10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transform: translate(-50%, -50%); }
+  
+  .hud-score { left:${config.hud.score.x}%; top:${config.hud.score.y}%; background:${scoreBg}; color:${config.hud.score.color}; font-size:${config.hud.score.fontSize}px; font-family:${config.hud.score.fontFamily}; width:${config.hud.score.width}px; }
+  .hud-time { left:${config.hud.time.x}%; top:${config.hud.time.y}%; background:${timeBg}; color:${config.hud.time.color}; font-size:${config.hud.time.fontSize}px; font-family:${config.hud.time.fontFamily}; width:${config.hud.time.width}px; }
+  .hud-vol { left:${config.hud.volume.x}%; top:${config.hud.volume.y}%; background:${volBg}; color:${config.hud.volume.color}; font-size:${config.hud.volume.fontSize}px; font-family:${config.hud.volume.fontFamily}; width:${config.hud.volume.width}px; }
+  
+  .hole { position:absolute; transform:translate(-50%, -50%); display:flex; flex-direction:column; align-items:center; justify-content:flex-end; }
+  .hole-bg { width: ${config.global.holeSize}px; height: ${config.global.holeSize * 0.35}px; background: ${holeBgColorRgba}; border-radius: 50%; box-shadow: inset 0 5px 15px rgba(0,0,0,0.8); }
+  .custom-hole-img { width: ${config.global.holeSize}px; object-fit: contain; }
+  
+  .mole-mask { position: absolute; overflow: hidden; pointer-events: none; transform: translate(-50%, -100%); clip-path: inset(-200% -200% 0 -200%); }
+  .mole { position: absolute; bottom: 0; left: 0; width: 100%; height: 100%; transition: transform linear; cursor: pointer; transform: translateY(100%); pointer-events: auto; }
+  
+  .word-label { background: ${bgColorRgba}; color: ${config.wordStyle.textColor}; font-family: ${config.wordStyle.fontFamily}; font-size: ${config.wordStyle.fontSize}px; font-weight: 900; padding: 4px 8px; border-radius: 6px; border: 2px solid ${borderColor}; box-shadow: 0 2px 4px rgba(0,0,0,0.2); text-align: center; position: absolute; bottom: 0; left: 50%; transform: translate(-50%, ${config.wordStyle.offsetY}px); z-index: 20; white-space: nowrap; }
+  
+  .title-text { color:${config.pages.start.titleColor}; font-size:${config.pages.start.titleFontSize || 48}px; font-family:${config.pages.start.fontFamily}; margin:0 0 10px 0; text-shadow:2px 2px 4px rgba(0,0,0,0.5); font-weight:900; }
+  .subtitle-text { color:#fff; font-size:${config.pages.start.subtitleFontSize || 24}px; font-family:${config.pages.start.fontFamily}; margin-bottom:20px; }
+  
+  .end-panel { background: rgba(255,255,255,0.95); padding: 30px; border-radius: 20px; max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto; color: #333; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+  .slogan-text { color:${config.pages.end.color}; font-size:${config.pages.end.sloganFontSize || 36}px; font-family:${config.pages.end.fontFamily}; font-weight:900; margin-bottom:10px; }
+  .reward-text { color:${config.pages.end.color}; font-size:${config.pages.end.rewardFontSize || 18}px; font-family:${config.pages.end.fontFamily}; margin: 15px 0; font-style: italic; }
+  .mistakes-list { text-align: left; background: #fef2f2; border-left: 4px solid #ef4444; padding: 10px 15px; margin-top: 15px; border-radius: 4px; font-size: 14px; font-family: sans-serif; color: #7f1d1d; }
+  .mistakes-list ul { margin: 5px 0 0 0; padding-left: 20px; }
+  
+  .particle { position: absolute; pointer-events: none; border-radius: 50%; z-index: 9500; animation: particle-anim 0.8s cubic-bezier(0.25, 1, 0.5, 1) forwards; }
+  .shatter { border-radius: 3px; animation: shatter-anim 0.8s ease-in forwards; }
+  @keyframes particle-anim { 0% { opacity: 1; transform: scale(1) translate(0, 0); } 100% { opacity: 0; transform: scale(0.2) var(--target-transform); } }
+  @keyframes shatter-anim { 0% { opacity: 1; transform: scale(1) translate(0, 0) rotate(0deg); } 100% { opacity: 0; transform: scale(0.5) var(--target-transform) rotate(720deg); } }
+  input[type=range] { cursor: pointer; width: 80px; }
+</style>
+</head>
+<body>
+  <div id="game-container">
+    <div id="start-screen" class="screen active">
+      <h1 class="title-text">${config.pages.start.title}</h1>
+      <p class="subtitle-text">${config.pages.start.subtitle}</p>
+      <button class="btn-start" onclick="startGame()">${config.pages.start.buttonText}</button>
+    </div>
+    
+    <div class="hud" style="display:none;" id="hud">
+      <div class="hud-box hud-score"><span id="lbl-score">Score</span>: <span id="score">0</span></div>
+      <div class="hud-box hud-vol">🔊 <input type="range" id="vol-slider" min="0" max="1" step="0.1" value="${config.global.musicVolume}"></div>
+      <div class="hud-box hud-time"><span id="lbl-time">Time</span>: <span id="time">${config.logic.gameTime > 0 ? config.logic.gameTime : 0}</span></div>
+    </div>
+    
+    <div id="holes-container"></div>
+    
+    <div id="end-screen" class="screen">
+      <div class="end-panel">
+          <h1 class="slogan-text">${config.pages.end.slogan}</h1>
+          <p style="font-size:24px; font-weight:bold; margin-bottom:10px;"><span id="lbl-final">Final Score</span>: <span id="final-score">0</span></p>
+          
+          <div style="display:flex; justify-content:center; gap:20px; align-items:center; flex-wrap:wrap; margin:15px 0;">
+              ${config.pages.end.rewardImage ? `<img src="${config.pages.end.rewardImage}" style="max-height:120px; object-fit:contain;">` : ''}
+              <img id="qr-code" style="width:120px; height:120px; border:4px solid #fff; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.1); display:none;" alt="QR Code" />
+          </div>
+          
+          <p class="reward-text">${config.pages.end.rewardText}</p>
+          <div id="mistakes-container"></div>
+          <button class="btn-end" onclick="resetGame()" id="btn-play-again">PLAY AGAIN</button>
+      </div>
+    </div>
+  </div>
+  
+  ${config.global.bgMusic ? `<audio id="bg-music" loop src="${config.global.bgMusic}"></audio>` : ''}
+  <audio id="snd-hit" src="${config.audio.hit || 'https://actions.google.com/sounds/v1/cartoon/pop.ogg'}"></audio>
+  <audio id="snd-win" src="${config.audio.success || 'https://actions.google.com/sounds/v1/cartoon/magic_chime.ogg'}"></audio>
+  <audio id="snd-lose" src="${config.audio.error || 'https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg'}"></audio>
+  
+  <script>
+    const config = ${JSON.stringify(config)};
+    const GAME_DURATION = config.logic.gameTime || 0;
+    
+    // I18N
+    const i18n = {
+        ru: { score: 'Счет', time: 'Время', playAgain: 'ИГРАТЬ ЕЩЕ', finalScore: 'Итоговый счет', mistakes: 'Ошибки и рекомендации:' },
+        en: { score: 'Score', time: 'Time', playAgain: 'PLAY AGAIN', finalScore: 'Final Score', mistakes: 'Mistakes & Recommendations:' },
+        de: { score: 'Punkte', time: 'Zeit', playAgain: 'NOCHMAL SPIELEN', finalScore: 'Endstand', mistakes: 'Fehler & Empfehlungen:' },
+        fr: { score: 'Score', time: 'Temps', playAgain: 'REJOUER', finalScore: 'Score Final', mistakes: 'Erreurs & Recommandations:' },
+        zh: { score: '分数', time: '时间', playAgain: '再玩一次', finalScore: '最终得分', mistakes: '错误与建议:' },
+        it: { score: 'Punteggio', time: 'Tempo', playAgain: 'GIOCA DI NUOVO', finalScore: 'Punteggio Finale', mistakes: 'Errori & Raccomandazioni:' }
+    };
+    const t = i18n[config.global.language] || i18n.ru;
+    
+    document.getElementById('lbl-score').innerText = t.score;
+    document.getElementById('lbl-time').innerText = t.time;
+    document.getElementById('lbl-final').innerText = t.finalScore;
+    document.getElementById('btn-play-again').innerText = t.playAgain;
+
+    let score = 0; let timeVar = GAME_DURATION > 0 ? GAME_DURATION : 0; 
+    let gameInterval, timerInterval;
+    let totalCorrectSpawned = 0; let correctHits = 0;
+    let mistakesMade = new Set();
+    let gameActive = false;
+
+    const scoreEl = document.getElementById('score');
+    const timeEl = document.getElementById('time');
+    
+    document.getElementById('vol-slider').addEventListener('input', function(e) {
+        const bgm = document.getElementById('bg-music');
+        if(bgm) bgm.volume = e.target.value;
+    });
+
+    function playSound(type) {
+      const s = document.getElementById('snd-' + type);
+      if(s) { s.currentTime = 0; s.play().catch(()=>{}); }
+    }
+
+    function createParticles(x, y, isCorrect) {
+      const container = document.body;
+      const colorsCorrect = ['#fde047', '#4ade80', '#60a5fa', '#f472b6', '#ffffff'];
+      const colorsWrong = ['#f87171', '#9ca3af', '#4b5563', '#1f2937'];
+      const numParticles = isCorrect ? 35 : 20;
+      for(let i=0; i<numParticles; i++) {
+        const p = document.createElement('div');
+        p.className = isCorrect ? 'particle' : 'particle shatter';
+        const size = Math.random() * 12 + 6;
+        p.style.width = size + 'px'; p.style.height = size + 'px';
+        p.style.background = isCorrect ? colorsCorrect[Math.floor(Math.random() * colorsCorrect.length)] : colorsWrong[Math.floor(Math.random() * colorsWrong.length)];
+        p.style.left = (x - size/2) + 'px'; p.style.top = (y - size/2) + 'px';
+        const angle = Math.random() * Math.PI * 2;
+        const velocity = isCorrect ? (Math.random() * 150 + 50) : (Math.random() * 100 + 30);
+        const tx = Math.cos(angle) * velocity;
+        let ty = Math.sin(angle) * velocity;
+        if (!isCorrect) ty = Math.abs(ty) + 120; else ty = ty - 80; 
+        p.style.setProperty('--target-transform', 'translate(' + tx + 'px, ' + ty + 'px)');
+        container.appendChild(p);
+        setTimeout(() => p.remove(), 800);
+      }
+    }
+
+    function spawnHoles() {
+      const container = document.getElementById('holes-container');
+      container.innerHTML = '';
+      const holeVisual = config.global.holeImage 
+          ? \`<img src="\${config.global.holeImage}" class="custom-hole-img" draggable="false" />\` 
+          : \`<div class="hole-bg"></div>\`;
+          
+      config.spawnPoints.forEach((sp, i) => {
+        const wX = sp.wordX !== undefined ? sp.wordX : sp.x;
+        const wY = sp.wordY !== undefined ? sp.wordY : sp.y;
+        const baseZ = Math.round(sp.y * 10) + (sp.zIndex || 0);
+        const isFront = sp.wordLayer === 'front';
+
+        const h = document.createElement('div');
+        h.className = 'hole'; h.style.left = sp.x + '%'; h.style.top = sp.y + '%'; h.style.zIndex = baseZ; 
+        h.innerHTML = holeVisual;
+        container.appendChild(h);
+
+        const m = document.createElement('div');
+        m.className = 'mole-mask';
+        m.style.left = wX + '%'; m.style.top = wY + '%';
+        m.style.zIndex = isFront ? baseZ + 1 : baseZ - 1;
+        
+        const initGroup = config.groups[0] || {size: 100};
+        const maskW = Math.max(120, initGroup.size);
+        const maskH = initGroup.size + Math.abs(config.wordStyle.offsetY) + 50;
+        m.style.width = maskW + 'px';
+        m.style.height = maskH + 'px';
+        
+        m.innerHTML = \`<div class="mole" id="mole-\${i}"></div>\`;
+        container.appendChild(m);
+      });
+    }
+
+    function hitMole(e, group, element) {
+      if(!gameActive) return;
+      element.onclick = null;
+      const isCorrect = group.isCorrect;
+      
+      score += isCorrect ? config.logic.pointsWin : config.logic.pointsLose;
+      scoreEl.innerText = score;
+      
+      if(isCorrect) correctHits++;
+      else mistakesMade.add(group.rule || group.name);
+      
+      playSound('hit');
+      setTimeout(() => playSound(isCorrect ? 'win' : 'lose'), 50);
+      
+      const rect = element.getBoundingClientRect();
+      const x = e.clientX || (rect.left + rect.width / 2);
+      const y = e.clientY || (rect.top + rect.height / 2);
+      
+      createParticles(x, y, isCorrect);
+      element.style.transitionDuration = '0s';
+      element.style.transform = 'translateY(100%)';
+    }
+
+    function activateRandomMole() {
+      if(!gameActive) return;
+      const holeIdx = Math.floor(Math.random() * config.spawnPoints.length);
+      const groupIdx = Math.floor(Math.random() * config.groups.length);
+      const group = config.groups[groupIdx];
+      const words = group.words.split('\\n').map(w=>w.trim()).filter(w=>w);
+      const word = words.length > 0 ? words[Math.floor(Math.random() * words.length)] : '';
+      
+      const moleEl = document.getElementById('mole-' + holeIdx);
+      if(!moleEl || moleEl.style.transform === 'translateY(0%)') return;
+
+      if(group.isCorrect) totalCorrectSpawned++;
+
+      const maskEl = moleEl.parentElement;
+      const maskW = Math.max(120, group.size);
+      const maskH = group.size + Math.abs(config.wordStyle.offsetY) + 50;
+      maskEl.style.width = maskW + 'px';
+      maskEl.style.height = maskH + 'px';
+
+      moleEl.style.transitionDuration = group.speed + 's';
+      moleEl.innerHTML = \`
+        \${group.image ? \`<img src="\${group.image}" style="width:100%; height:100%; object-fit:contain; position:absolute; bottom:0; left:0;" draggable="false">\` : \`<div style="width:100%; height:100%; background:\${group.isCorrect?'#4ade80':'#f87171'}; border-radius:50% 50% 0 0; border:2px solid #333; position:absolute; bottom:0; left:0;"></div>\`}
+        \${word ? \`<div class="word-label">\${word}</div>\` : ''}
+      \`;
+      
+      moleEl.onclick = (e) => hitMole(e, group, moleEl);
+      setTimeout(() => { 
+          moleEl.style.transitionDuration = group.speed + 's';
+          moleEl.style.transform = 'translateY(0%)'; 
+      }, 50);
+      
+      setTimeout(() => {
+        if(moleEl.style.transform === 'translateY(0%)') {
+           moleEl.style.transitionDuration = group.speed + 's';
+           moleEl.style.transform = 'translateY(100%)';
+           moleEl.onclick = null;
+        }
+      }, (group.speed * 1000) + 1000);
+    }
+
+    function startGame() {
+      document.getElementById('start-screen').classList.remove('active');
+      document.getElementById('hud').style.display = 'block';
+      const bgm = document.getElementById('bg-music');
+      const volSlider = document.getElementById('vol-slider');
+      if(bgm) { bgm.volume = volSlider.value; bgm.play().catch(()=>{}); }
+      
+      totalCorrectSpawned = 0; correctHits = 0; mistakesMade.clear();
+      gameActive = true;
+      
+      spawnHoles();
+      gameInterval = setInterval(activateRandomMole, 1500);
+      
+      timerInterval = setInterval(() => {
+        if (GAME_DURATION > 0) {
+            timeVar--; timeEl.innerText = timeVar;
+            if(timeVar <= 0) endGame();
+        } else {
+            timeVar++; timeEl.innerText = timeVar;
+        }
+      }, 1000);
+    }
+
+    function resetGame() {
+        score = 0; timeVar = GAME_DURATION > 0 ? GAME_DURATION : 0;
+        scoreEl.innerText = score; timeEl.innerText = timeVar;
+        document.getElementById('end-screen').classList.remove('active');
+        document.getElementById('qr-code').style.display = 'none';
+        document.getElementById('mistakes-container').innerHTML = '';
+        startGame();
+    }
+
+    function endGame() {
+      gameActive = false;
+      clearInterval(gameInterval); clearInterval(timerInterval);
+      document.getElementById('hud').style.display = 'none';
+      document.getElementById('end-screen').classList.add('active');
+      document.getElementById('final-score').innerText = score;
+      document.getElementById('holes-container').innerHTML = '';
+      const bgm = document.getElementById('bg-music');
+      if(bgm) bgm.pause();
+
+      const timeText = GAME_DURATION > 0 ? GAME_DURATION + 's' : timeVar + 's';
+      const qrData = \`Date: \${new Date().toLocaleDateString()}\\nTime: \${timeText}\\nCorrect: \${correctHits} / \${totalCorrectSpawned}\`;
+      const qrImg = document.getElementById('qr-code');
+      qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent(qrData);
+      qrImg.style.display = 'block';
+
+      const mistakesDiv = document.getElementById('mistakes-container');
+      if(mistakesMade.size > 0) {
+          const listHtml = Array.from(mistakesMade).filter(Boolean).map(m => \`<li>\${m}</li>\`).join('');
+          if(listHtml) {
+              mistakesDiv.innerHTML = \`<div class="mistakes-list"><strong>\${t.mistakes}</strong><ul>\${listHtml}</ul></div>\`;
+          }
+      }
+    }
+  <\/script>
+</body>
+</html>`;
+            };
+
+            const exportHTML = () => {
+                const blob = new Blob([generateHTML()], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = 'magic-game.html';
+                a.click(); URL.revokeObjectURL(url);
+            };
+
+            const inputClass = "w-full bg-white/80 border-2 border-purple-300 rounded-xl px-3 py-2 text-purple-900 font-medium focus:outline-none focus:border-yellow-400";
+            const labelClass = "block text-sm font-bold text-white mb-1 drop-shadow-md";
+
+            const getRgba = (hex, opacity) => {
+                const r = parseInt((hex||'#ffffff').slice(1, 3), 16) || 255;
+                const g = parseInt((hex||'#ffffff').slice(3, 5), 16) || 255;
+                const b = parseInt((hex||'#ffffff').slice(5, 7), 16) || 255;
+                return `rgba(${r}, ${g}, ${b}, ${opacity !== undefined ? opacity : 0.9})`;
+            };
+
+            const renderHudConfig = (hudKey, label) => (
+                <div className="bg-black/20 p-3 rounded-xl mb-3 space-y-2">
+                    <h3 className="text-sm font-bold text-yellow-300">{label}</h3>
+                    <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <label className="text-[10px] text-white">Шрифт (px)</label>
+                            <input type="number" value={config.hud[hudKey].fontSize} onChange={e => updateHudConfig(hudKey, 'fontSize', parseInt(e.target.value)||20)} className={`${inputClass} !py-1 !text-xs`} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] text-white">Ширина (px)</label>
+                            <input type="number" value={config.hud[hudKey].width} onChange={e => updateHudConfig(hudKey, 'width', parseInt(e.target.value)||100)} className={`${inputClass} !py-1 !text-xs`} />
+                        </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                        <div><label className="text-[10px] text-white">Цвет текста</label><input type="color" value={config.hud[hudKey].color} onChange={e => updateHudConfig(hudKey, 'color', e.target.value)} className="w-full h-6" /></div>
+                        <div><label className="text-[10px] text-white">Фон</label><input type="color" value={config.hud[hudKey].bgColor} onChange={e => updateHudConfig(hudKey, 'bgColor', e.target.value)} className="w-full h-6" /></div>
+                    </div>
+                    <div>
+                        <label className="text-[10px] text-white">Прозрачность фона: {Math.round(config.hud[hudKey].bgOpacity * 100)}%</label>
+                        <input type="range" min="0" max="1" step="0.05" value={config.hud[hudKey].bgOpacity} onChange={e => updateHudConfig(hudKey, 'bgOpacity', parseFloat(e.target.value))} className="w-full" />
+                    </div>
+                    <div>
+                        <label className="text-[10px] text-white">Шрифт</label>
+                        <select value={config.hud[hudKey].fontFamily} onChange={(e) => updateHudConfig(hudKey, 'fontFamily', e.target.value)} className={`${inputClass} !py-1 !text-xs`}>
+                            <option value="system-ui">System Default</option>
+                            <option value="'Comic Sans MS', cursive, sans-serif">Comic Sans</option>
+                            <option value="Arial, sans-serif">Arial</option>
+                            <option value="Impact, fantasy">Impact</option>
+                        </select>
+                    </div>
+                </div>
+            );
+
+            const previewGroup = config.groups[0] || { size: 100, image: '', words: 'Word', isCorrect: true, rotation: 0 };
+            const previewWord = previewGroup.words.split('\n')[0] || 'Word';
+
+            return (
+                <div 
+                    className="flex h-screen w-full bg-gradient-to-br from-indigo-900 via-purple-800 to-fuchsia-900 touch-none"
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerLeave={handlePointerUp}
+                >
+                    {/* SIDEBAR */}
+                    <div className="w-[350px] flex flex-col h-full bg-purple-900/40 border-r-4 border-white/20 p-4 overflow-y-auto custom-scrollbar pointer-events-auto shrink-0 z-50 relative">
+                        <h1 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 to-pink-400 mb-6 text-center drop-shadow-sm">✨ Magic Editor ✨</h1>
+                        
+                        <div className="flex flex-wrap gap-1 mb-6">
+                            {['global', 'words', 'groups', 'logic', 'hud', 'pages', 'export'].map(tab => (
+                                <button key={tab} onClick={() => setEditorSection(tab)} className={`flex-1 py-2 px-1 rounded-xl text-[10px] font-bold uppercase transition-all ${editorSection === tab ? 'bg-yellow-400 text-purple-900' : 'bg-white/10 text-white hover:bg-white/20'}`}>
+                                    {tab}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="space-y-6 flex-1">
+                            {editorSection === 'global' && (
+                                <MagicalPanel>
+                                    <h2 className="text-xl font-bold text-yellow-300 mb-4">Environment</h2>
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className={labelClass}>Game Language</label>
+                                            <select value={config.global.language} onChange={(e) => updateConfig('global', 'language', e.target.value)} className={inputClass}>
+                                                <option value="ru">Русский (Russian)</option>
+                                                <option value="en">English</option>
+                                                <option value="de">Deutsch (German)</option>
+                                                <option value="fr">Français (French)</option>
+                                                <option value="zh">中文 (Chinese)</option>
+                                                <option value="it">Italiano (Italian)</option>
+                                            </select>
+                                        </div>
+                                        <hr className="border-white/20" />
+                                        <div>
+                                            <label className={labelClass}>Background Image</label>
+                                            <input type="file" accept="image/*" onChange={(e) => handleFileUpload(e, res => updateConfig('global', 'background', res))} className="text-white text-sm" />
+                                        </div>
+                                        <hr className="border-white/20" />
+                                        <div>
+                                            <label className={labelClass}>Hole Image (Норка)</label>
+                                            <input type="file" accept="image/*" onChange={(e) => handleFileUpload(e, res => updateConfig('global', 'holeImage', res))} className="text-white text-sm mb-2" />
+                                            <label className="text-xs text-white">Hole Width (px): <input type="number" className={`${inputClass} !py-1 !text-xs w-20 inline-block ml-2`} value={config.global.holeSize} onChange={e => updateConfig('global', 'holeSize', parseInt(e.target.value) || 100)} /></label>
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Hole Style (if no image)</label>
+                                            <div className="flex gap-2 mb-2">
+                                                <input type="color" value={config.global.holeColor} onChange={(e) => updateConfig('global', 'holeColor', e.target.value)} className="w-1/3 h-8 cursor-pointer" />
+                                                <div className="w-2/3">
+                                                    <label className="text-[10px] text-white block">Opacity: {Math.round((config.global.holeOpacity !== undefined ? config.global.holeOpacity : 0.7) * 100)}%</label>
+                                                    <input type="range" min="0" max="1" step="0.05" value={config.global.holeOpacity !== undefined ? config.global.holeOpacity : 0.7} onChange={(e) => updateConfig('global', 'holeOpacity', parseFloat(e.target.value))} className="w-full" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <hr className="border-white/20" />
+                                        <div>
+                                            <label className={labelClass}>Background Music</label>
+                                            <input type="file" accept="audio/*" onChange={(e) => handleFileUpload(e, res => updateConfig('global', 'bgMusic', res))} className="text-white text-sm" />
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Music Volume: {Math.round(config.global.musicVolume * 100)}%</label>
+                                            <input type="range" min="0" max="1" step="0.1" value={config.global.musicVolume} onChange={(e) => updateConfig('global', 'musicVolume', parseFloat(e.target.value) || 0)} className="w-full" />
+                                        </div>
+                                    </div>
+                                </MagicalPanel>
+                            )}
+
+                            {editorSection === 'words' && (
+                                <MagicalPanel>
+                                    <h2 className="text-xl font-bold text-yellow-300 mb-4">Word Cards Style</h2>
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className={labelClass}>Vertical Position (Вверх / Вниз)</label>
+                                            <input type="range" min="-150" max="50" value={config.wordStyle.offsetY} onChange={(e) => updateConfig('wordStyle', 'offsetY', parseInt(e.target.value))} className="w-full" />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className={labelClass}>Background</label>
+                                                <input type="color" value={config.wordStyle.bgColor} onChange={(e) => updateConfig('wordStyle', 'bgColor', e.target.value)} className="w-full h-8 cursor-pointer" />
+                                            </div>
+                                            <div>
+                                                <label className={labelClass}>Opacity: {Math.round(config.wordStyle.bgOpacity * 100)}%</label>
+                                                <input type="range" min="0" max="1" step="0.05" value={config.wordStyle.bgOpacity} onChange={(e) => updateConfig('wordStyle', 'bgOpacity', parseFloat(e.target.value))} className="w-full" />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className={labelClass}>Text Color</label>
+                                                <input type="color" value={config.wordStyle.textColor} onChange={(e) => updateConfig('wordStyle', 'textColor', e.target.value)} className="w-full h-8 cursor-pointer" />
+                                            </div>
+                                            <div>
+                                                <label className={labelClass}>Font Size (px)</label>
+                                                <input type="number" value={config.wordStyle.fontSize} onChange={(e) => updateConfig('wordStyle', 'fontSize', parseInt(e.target.value) || 14)} className={`${inputClass} !py-1`} />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label className={labelClass}>Font Family</label>
+                                            <select value={config.wordStyle.fontFamily} onChange={(e) => updateConfig('wordStyle', 'fontFamily', e.target.value)} className={inputClass}>
+                                                <option value="system-ui">System Default</option>
+                                                <option value="'Comic Sans MS', cursive, sans-serif">Comic Sans</option>
+                                                <option value="Arial, sans-serif">Arial</option>
+                                                <option value="'Courier New', Courier, monospace">Courier New</option>
+                                                <option value="'Times New Roman', Times, serif">Times New Roman</option>
+                                                <option value="Impact, fantasy">Impact</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </MagicalPanel>
+                            )}
+
+                            {editorSection === 'groups' && (
+                                <div className="space-y-4">
+                                    <button onClick={() => setConfig(prev => ({...prev, groups: [...prev.groups, { id: `g-${Date.now()}`, name: 'New Group', isCorrect: true, image: '', size: 100, rotation: 0, direction: 'up', speed: 1.5, words: '', rule: '' }] }))} className="w-full bg-green-500 hover:bg-green-400 text-white font-bold py-2 rounded-xl transition">Add Group</button>
+                                    {config.groups.map(g => (
+                                        <MagicalPanel key={g.id} className="relative !p-3">
+                                            <button onClick={() => setConfig(prev => ({...prev, groups: prev.groups.filter(grp => grp.id !== g.id)}))} className="absolute top-2 right-2 text-red-300 hover:text-red-100 text-sm font-bold transition">X</button>
+                                            <input className={`${inputClass} mb-2 !py-1 !text-sm w-4/5`} value={g.name} onChange={e => updateGroup(g.id, 'name', e.target.value)} />
+                                            
+                                            <div className="flex gap-2 mb-2">
+                                                <button onClick={() => updateGroup(g.id, 'isCorrect', true)} className={`flex-1 py-1 rounded text-xs font-bold transition ${g.isCorrect ? 'bg-green-500 text-white' : 'bg-white/20 text-gray-300'}`}>Correct</button>
+                                                <button onClick={() => updateGroup(g.id, 'isCorrect', false)} className={`flex-1 py-1 rounded text-xs font-bold transition ${!g.isCorrect ? 'bg-red-500 text-white' : 'bg-white/20 text-gray-300'}`}>Wrong</button>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2 mb-2">
+                                                <div><label className="text-xs text-white">Size (px)</label><input type="number" className={`${inputClass} !py-1 !text-xs`} value={g.size} onChange={e => updateGroup(g.id, 'size', parseInt(e.target.value) || 0)} /></div>
+                                                <div><label className="text-xs text-white">Speed (s)</label><input type="number" step="0.1" className={`${inputClass} !py-1 !text-xs`} value={g.speed} onChange={e => updateGroup(g.id, 'speed', parseFloat(e.target.value) || 0.1)} /></div>
+                                            </div>
+
+                                            <label className="text-xs text-white block mb-1">Image <input type="file" accept="image/*" onChange={e => handleFileUpload(e, res => updateGroup(g.id, 'image', res))} className="text-[10px]" /></label>
+                                            <textarea className={`${inputClass} text-xs h-16 resize-none mb-2`} value={g.words} onChange={e => updateGroup(g.id, 'words', e.target.value)} placeholder="Words (1 per line)"></textarea>
+                                            
+                                            <label className="text-xs text-yellow-300 font-bold block mb-1">Правило / Рекомендация (при ошибке)</label>
+                                            <textarea className={`${inputClass} text-xs h-12 resize-none`} value={g.rule || ''} onChange={e => updateGroup(g.id, 'rule', e.target.value)} placeholder="Объясните правило..."></textarea>
+                                        </MagicalPanel>
+                                    ))}
+                                </div>
+                            )}
+
+                            {editorSection === 'logic' && (
+                                <MagicalPanel>
+                                    <h2 className="text-xl font-bold text-yellow-300 mb-4">Logic & Sounds</h2>
+                                    <div className="space-y-3">
+                                        <div>
+                                            <label className={labelClass}>Время Игры (сек)</label>
+                                            <input type="number" className={inputClass} value={config.logic.gameTime} onChange={e => updateConfig('logic', 'gameTime', parseInt(e.target.value) || 0)} />
+                                            <p className="text-[10px] text-white/70 mt-1 leading-tight">Поставьте 0, чтобы таймер шел ВПЕРЕД (бесконечная игра на очки).</p>
+                                        </div>
+                                        <hr className="border-white/20 my-2" />
+                                        <div><label className={labelClass}>Points (Win)</label><input type="number" className={inputClass} value={config.logic.pointsWin} onChange={e => updateConfig('logic', 'pointsWin', parseInt(e.target.value) || 0)} /></div>
+                                        <div><label className={labelClass}>Points (Lose)</label><input type="number" className={inputClass} value={config.logic.pointsLose} onChange={e => updateConfig('logic', 'pointsLose', parseInt(e.target.value) || 0)} /></div>
+                                        
+                                        <hr className="border-white/20 my-2" />
+                                        
+                                        <div><label className={labelClass}>Hit Sound (Удар)</label><input type="file" accept="audio/*" onChange={e => handleFileUpload(e, res => updateConfig('audio', 'hit', res))} className="text-white text-xs" /></div>
+                                        <div><label className={labelClass}>Success Sound (Успех)</label><input type="file" accept="audio/*" onChange={e => handleFileUpload(e, res => updateConfig('audio', 'success', res))} className="text-white text-xs" /></div>
+                                        <div><label className={labelClass}>Error Sound (Ошибка)</label><input type="file" accept="audio/*" onChange={e => handleFileUpload(e, res => updateConfig('audio', 'error', res))} className="text-white text-xs" /></div>
+                                    </div>
+                                </MagicalPanel>
+                            )}
+
+                            {editorSection === 'hud' && (
+                                <MagicalPanel>
+                                    <h2 className="text-xl font-bold text-yellow-300 mb-2">Настройки HUD (Интерфейса)</h2>
+                                    <p className="text-[10px] text-white/70 mb-4 leading-tight">Перетаскивайте блоки Счета, Таймера и Звука прямо на игровом поле во вкладке "Spawn Editor".</p>
+                                    {renderHudConfig('score', 'Счетчик баллов (Score)')}
+                                    {renderHudConfig('time', 'Таймер (Time)')}
+                                    {renderHudConfig('volume', 'Ползунок звука (Volume)')}
+                                </MagicalPanel>
+                            )}
+
+                            {editorSection === 'pages' && (
+                                <div className="space-y-4">
+                                    <MagicalPanel>
+                                        <h2 className="text-xl font-bold text-yellow-300 mb-2">Start Page</h2>
+                                        <div className="space-y-2 mb-4">
+                                            <input className={inputClass} value={config.pages.start.title} onChange={e => updateConfig('pages', 'start', {...config.pages.start, title: e.target.value})} placeholder="Title" />
+                                            <div className="flex gap-2">
+                                                <input type="number" value={config.pages.start.titleFontSize} onChange={e => updateConfig('pages', 'start', {...config.pages.start, titleFontSize: parseInt(e.target.value) || 48})} className={`${inputClass} !py-1 w-1/2`} placeholder="Size (px)" />
+                                                <input type="color" value={config.pages.start.titleColor} onChange={e => updateConfig('pages', 'start', {...config.pages.start, titleColor: e.target.value})} className="w-1/2 h-8 cursor-pointer" />
+                                            </div>
+                                            
+                                            <input className={inputClass} value={config.pages.start.subtitle} onChange={e => updateConfig('pages', 'start', {...config.pages.start, subtitle: e.target.value})} placeholder="Subtitle" />
+                                            <input type="number" value={config.pages.start.subtitleFontSize} onChange={e => updateConfig('pages', 'start', {...config.pages.start, subtitleFontSize: parseInt(e.target.value) || 24})} className={`${inputClass} !py-1 w-1/2`} placeholder="Subtitle Size (px)" />
+                                            
+                                            <select value={config.pages.start.fontFamily} onChange={(e) => updateConfig('pages', 'start', {...config.pages.start, fontFamily: e.target.value})} className={`${inputClass} !py-1`}>
+                                                <option value="system-ui">System Default</option>
+                                                <option value="'Comic Sans MS', cursive, sans-serif">Comic Sans</option>
+                                                <option value="Arial, sans-serif">Arial</option>
+                                                <option value="Impact, fantasy">Impact</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <div className="p-3 bg-black/20 rounded-xl space-y-2">
+                                            <label className="text-xs font-bold text-white uppercase">Button Settings</label>
+                                            <input className={`${inputClass} !py-1`} value={config.pages.start.buttonText} onChange={e => updateConfig('pages', 'start', {...config.pages.start, buttonText: e.target.value})} placeholder="Button Text" />
+                                            <div className="flex gap-2">
+                                                <div><label className="text-[10px] text-white">BG Color</label><input type="color" value={config.pages.start.btnBg} onChange={e => updateConfig('pages', 'start', {...config.pages.start, btnBg: e.target.value})} className="w-full h-6" /></div>
+                                                <div><label className="text-[10px] text-white">Text Color</label><input type="color" value={config.pages.start.btnColor} onChange={e => updateConfig('pages', 'start', {...config.pages.start, btnColor: e.target.value})} className="w-full h-6" /></div>
+                                                <div><label className="text-[10px] text-white">Font Size</label><input type="number" value={config.pages.start.btnFontSize} onChange={e => updateConfig('pages', 'start', {...config.pages.start, btnFontSize: parseInt(e.target.value)||16})} className={`${inputClass} !py-0 !text-xs h-6`} /></div>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <div><label className="text-[10px] text-white">Pad X (W)</label><input type="number" value={config.pages.start.btnPaddingX} onChange={e => updateConfig('pages', 'start', {...config.pages.start, btnPaddingX: parseInt(e.target.value)||0})} className={`${inputClass} !py-0 !text-xs h-6`} /></div>
+                                                <div><label className="text-[10px] text-white">Pad Y (H)</label><input type="number" value={config.pages.start.btnPaddingY} onChange={e => updateConfig('pages', 'start', {...config.pages.start, btnPaddingY: parseInt(e.target.value)||0})} className={`${inputClass} !py-0 !text-xs h-6`} /></div>
+                                            </div>
+                                        </div>
+                                    </MagicalPanel>
+
+                                    <MagicalPanel>
+                                        <h2 className="text-xl font-bold text-yellow-300 mb-2">Feedback (End) Page</h2>
+                                        <div className="space-y-2 mb-4">
+                                            <input className={inputClass} value={config.pages.end.slogan} onChange={e => updateConfig('pages', 'end', {...config.pages.end, slogan: e.target.value})} placeholder="Slogan" />
+                                            <div className="flex gap-2">
+                                                <input type="number" value={config.pages.end.sloganFontSize} onChange={e => updateConfig('pages', 'end', {...config.pages.end, sloganFontSize: parseInt(e.target.value) || 36})} className={`${inputClass} !py-1 w-1/2`} placeholder="Size (px)" />
+                                                <input type="color" value={config.pages.end.color} onChange={e => updateConfig('pages', 'end', {...config.pages.end, color: e.target.value})} className="w-1/2 h-8 cursor-pointer" />
+                                            </div>
+                                            
+                                            <input className={inputClass} value={config.pages.end.rewardText} onChange={e => updateConfig('pages', 'end', {...config.pages.end, rewardText: e.target.value})} placeholder="Reward Text" />
+                                            <input type="number" value={config.pages.end.rewardFontSize} onChange={e => updateConfig('pages', 'end', {...config.pages.end, rewardFontSize: parseInt(e.target.value) || 18})} className={`${inputClass} !py-1 w-1/2`} placeholder="Reward Size (px)" />
+                                            
+                                            <select value={config.pages.end.fontFamily} onChange={(e) => updateConfig('pages', 'end', {...config.pages.end, fontFamily: e.target.value})} className={`${inputClass} !py-1`}>
+                                                <option value="system-ui">System Default</option>
+                                                <option value="'Comic Sans MS', cursive, sans-serif">Comic Sans</option>
+                                                <option value="Arial, sans-serif">Arial</option>
+                                                <option value="Impact, fantasy">Impact</option>
+                                            </select>
+                                            
+                                            <label className="text-white text-sm block mt-2">Reward Image <input type="file" accept="image/*" onChange={e => handleFileUpload(e, res => updateConfig('pages', 'end', {...config.pages.end, rewardImage: res}))} className="text-xs mt-1" /></label>
+                                        </div>
+                                    </MagicalPanel>
+                                </div>
+                            )}
+
+                            {editorSection === 'export' && (
+                                <MagicalPanel className="space-y-4">
+                                    <h2 className="text-xl font-bold text-yellow-300 mb-4">Export & Save</h2>
+                                    <button onClick={exportJSON} className="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-2 rounded-xl mb-2 transition">Download JSON</button>
+                                    <label className="w-full block bg-purple-500 hover:bg-purple-400 text-white font-bold py-2 rounded-xl text-center cursor-pointer mb-4 transition">
+                                        Import JSON <input type="file" accept=".json" className="hidden" onChange={importJSON} />
+                                    </label>
+                                    <hr className="border-white/20"/>
+                                    <button onClick={() => {exportHTML()}} className="w-full bg-gradient-to-r from-yellow-400 to-orange-500 hover:from-yellow-300 hover:to-orange-400 text-purple-900 font-black py-3 rounded-xl mt-4 shadow-lg transition transform hover:scale-105">EXPORT GAME (HTML)</button>
+                                    
+                                    <div className="mt-4">
+                                        <label className={labelClass}>Iframe для Genially</label>
+                                        <textarea 
+                                            readOnly 
+                                            value={`<iframe src="ССЫЛКА_НА_ИГРУ_ЗДЕСЬ" width="100%" height="600px" style="border:none; border-radius:12px;" allowfullscreen></iframe>`} 
+                                            className="w-full bg-black/50 text-green-400 text-xs p-2 rounded h-20 resize-none outline-none cursor-pointer" 
+                                            onClick={(e) => e.target.select()}
+                                        />
+                                        <p className="text-[10px] text-purple-200 mt-1">1. Нажми EXPORT GAME и сохрани HTML-файл.<br/>2. Загрузи файл на бесплатный хостинг (напр. Tiiny.host).<br/>3. Вставь полученную ссылку в этот код вместо "ССЫЛКА_НА_ИГРУ_ЗДЕСЬ" и добавь на слайд Genially.</p>
+                                    </div>
+                                </MagicalPanel>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* PREVIEW AREA */}
+                    <div className="flex-1 flex flex-col p-6 bg-purple-900/10 pointer-events-auto z-10">
+                        <div className="flex gap-2 mb-4">
+                            {['spawn', 'start', 'game', 'end'].map(tab => (
+                                <button key={tab} onClick={() => setActiveTab(tab)} className={`px-6 py-2 rounded-t-xl font-bold uppercase transition ${activeTab === tab ? 'bg-white text-purple-900' : 'bg-white/20 text-white hover:bg-white/30'}`}>
+                                    {tab === 'spawn' ? 'Spawn Editor' : tab === 'game' ? 'Live Game' : tab === 'start' ? 'Start Screen' : 'End Screen'}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="flex-1 bg-white rounded-b-2xl rounded-tr-2xl shadow-2xl relative overflow-hidden border-8 border-white">
+                            <div className="w-full h-full relative" style={{ background: config.global.background ? `url(${config.global.background}) center/cover` : 'linear-gradient(to bottom, #87CEEB, #90EE90)' }}>
+                                
+                                {activeTab === 'spawn' && (
+                                    <div ref={spawnCanvasRef} onClick={handleCanvasClick} className="absolute inset-0 z-10 bg-black/10">
+                                        
+                                        {/* DRAGGABLE HUD ELEMENTS IN SPAWN EDITOR */}
+                                        <div 
+                                            className="absolute border-2 border-dashed border-yellow-400 pointer-events-auto cursor-grab active:cursor-grabbing flex items-center justify-center gap-2 p-2 rounded shadow-lg"
+                                            style={{ 
+                                                left: `${config.hud.score.x}%`, top: `${config.hud.score.y}%`, transform: 'translate(-50%, -50%)',
+                                                background: getRgba(config.hud.score.bgColor, config.hud.score.bgOpacity), color: config.hud.score.color,
+                                                fontFamily: config.hud.score.fontFamily, fontSize: `${config.hud.score.fontSize}px`, width: `${config.hud.score.width}px`
+                                            }}
+                                            onPointerDown={(e) => handlePointerDown('hud-score', 'hud-score', e)}
+                                        >
+                                            Score: 10
+                                        </div>
+                                        
+                                        <div 
+                                            className="absolute border-2 border-dashed border-yellow-400 pointer-events-auto cursor-grab active:cursor-grabbing flex items-center justify-center gap-2 p-2 rounded shadow-lg"
+                                            style={{ 
+                                                left: `${config.hud.time.x}%`, top: `${config.hud.time.y}%`, transform: 'translate(-50%, -50%)',
+                                                background: getRgba(config.hud.time.bgColor, config.hud.time.bgOpacity), color: config.hud.time.color,
+                                                fontFamily: config.hud.time.fontFamily, fontSize: `${config.hud.time.fontSize}px`, width: `${config.hud.time.width}px`
+                                            }}
+                                            onPointerDown={(e) => handlePointerDown('hud-time', 'hud-time', e)}
+                                        >
+                                            Time: {config.logic.gameTime > 0 ? config.logic.gameTime : 0}
+                                        </div>
+
+                                        <div 
+                                            className="absolute border-2 border-dashed border-yellow-400 pointer-events-auto cursor-grab active:cursor-grabbing flex items-center justify-center gap-2 p-2 rounded shadow-lg"
+                                            style={{ 
+                                                left: `${config.hud.volume.x}%`, top: `${config.hud.volume.y}%`, transform: 'translate(-50%, -50%)',
+                                                background: getRgba(config.hud.volume.bgColor, config.hud.volume.bgOpacity), color: config.hud.volume.color,
+                                                fontFamily: config.hud.volume.fontFamily, fontSize: `${config.hud.volume.fontSize}px`, width: `${config.hud.volume.width}px`
+                                            }}
+                                            onPointerDown={(e) => handlePointerDown('hud-volume', 'hud-volume', e)}
+                                        >
+                                            🔊 ---O
+                                        </div>
+
+
+                                        <div className="absolute top-1/2 left-4 bg-black/60 text-white p-3 rounded-xl pointer-events-none z-50">
+                                            Кликните по фону, чтобы добавить поле.<br/>Используйте Drag & Drop для раздельного<br/>управления норками, словами и панелями HUD.
+                                            <div className="mt-3 pointer-events-auto" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                                                <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-yellow-300 bg-white/10 px-2 py-1 rounded hover:bg-white/20 transition-colors w-max">
+                                                    <input type="checkbox" checked={ghostMode} onChange={() => setGhostMode(!ghostMode)} className="cursor-pointer" />
+                                                    Прозрачный режим (Рентген)
+                                                </label>
+                                            </div>
+                                        </div>
+                                        
+                                        {config.spawnPoints.map(sp => {
+                                            const wX = sp.wordX !== undefined ? sp.wordX : sp.x;
+                                            const wY = sp.wordY !== undefined ? sp.wordY : sp.y;
+                                            const baseZ = Math.round(sp.y * 10) + (sp.zIndex || 0);
+                                            const isFront = sp.wordLayer === 'front';
+                                            const maskW = Math.max(120, previewGroup.size);
+                                            const maskH = previewGroup.size + Math.abs(config.wordStyle.offsetY) + 50;
+                                            const currentWordZ = dragging?.id === sp.id && dragging?.type === 'word' ? 99999 : (isFront ? baseZ + 1 : baseZ - 1);
+                                            const currentHoleZ = dragging?.id === sp.id && dragging?.type === 'hole' ? 99999 : baseZ;
+                                            const opacityClass = ghostMode && dragging?.id !== sp.id ? 'opacity-30 hover:opacity-60' : 'opacity-90 hover:opacity-100';
+
+                                            return (
+                                                <React.Fragment key={sp.id}>
+                                                    <div 
+                                                        className={`absolute -translate-x-1/2 -translate-y-1/2 pointer-events-none transition-transform ${dragging?.id === sp.id && dragging?.type === 'word' ? 'scale-110' : ''}`}
+                                                        style={{ left: `${wX}%`, top: `${wY}%`, zIndex: currentWordZ, width: maskW, height: maskH, transform: `translate(-50%, -100%)` }}
+                                                    >
+                                                        <div className="w-full h-full border-2 border-dashed border-blue-400 bg-blue-500/10 flex flex-col items-center justify-end relative" style={{ clipPath: 'inset(-200% -200% 0 -200%)' }}>
+                                                            <div className={`absolute bottom-0 w-full h-full flex flex-col items-center pointer-events-none transition-opacity ${opacityClass}`}>
+                                                                {previewGroup.image ? 
+                                                                    <img src={previewGroup.image} style={{width: '100%', height: '100%', objectFit: 'contain', position: 'absolute', bottom: 0, left: 0}} className="drop-shadow-xl" /> : 
+                                                                    <div style={{width: '100%', height: '100%', position: 'absolute', bottom: 0, left: 0}} className={`rounded-t-full shadow-lg border-2 border-black/20 ${previewGroup.isCorrect ? 'bg-green-400' : 'bg-red-400'}`}></div>
+                                                                }
+                                                                {previewWord && (
+                                                                    <div style={{
+                                                                        background: getRgba(config.wordStyle.bgColor, config.wordStyle.bgOpacity),
+                                                                        color: config.wordStyle.textColor,
+                                                                        fontFamily: config.wordStyle.fontFamily,
+                                                                        fontSize: `${config.wordStyle.fontSize}px`,
+                                                                        fontWeight: 900, padding: '4px 8px', borderRadius: '6px',
+                                                                        border: `2px solid rgba(200,200,200,${config.wordStyle.bgOpacity})`,
+                                                                        boxShadow: '0 2px 4px rgba(0,0,0,0.2)', textAlign: 'center',
+                                                                        position: 'absolute', bottom: 0, left: '50%', transform: `translate(-50%, ${config.wordStyle.offsetY}px)`, zIndex: 20, whiteSpace: 'nowrap'
+                                                                    }}>{previewWord}</div>
+                                                                )}
+                                                            </div>
+                                                            <div 
+                                                                className={`absolute left-1/2 -translate-x-1/2 bg-blue-500 text-white text-[10px] px-2 py-1 rounded w-max text-center select-none font-bold shadow-md pointer-events-auto cursor-grab active:cursor-grabbing transition-transform ${dragging?.id === sp.id && dragging?.type === 'word' ? 'scale-110' : 'hover:scale-105'}`}
+                                                                style={{ top: '-45px' }}
+                                                                onPointerDown={(e) => handlePointerDown(sp.id, 'word', e)}
+                                                            >
+                                                                Слово (Drag)
+                                                                <div className="flex gap-1 mt-1 pointer-events-auto justify-center">
+                                                                    <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); updateSpawnPoint(sp.id, 'wordLayer', isFront ? 'back' : 'front'); }} className="bg-white/20 hover:bg-white/40 px-2 py-1 rounded">Слой: {isFront ? 'Перед' : 'За'}</button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div 
+                                                        className={`absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center transition-transform pointer-events-none ${dragging?.id === sp.id && dragging?.type === 'hole' ? 'scale-110' : ''}`}
+                                                        style={{ left: `${sp.x}%`, top: `${sp.y}%`, zIndex: currentHoleZ }}
+                                                    >
+                                                        <div 
+                                                            className={`pointer-events-auto cursor-grab active:cursor-grabbing transition-all ${ghostMode && dragging?.id !== sp.id ? 'opacity-30 hover:opacity-60' : 'opacity-100 hover:scale-105'}`}
+                                                            onPointerDown={(e) => handlePointerDown(sp.id, 'hole', e)}
+                                                        >
+                                                            {config.global.holeImage ? 
+                                                                <img src={config.global.holeImage} style={{width: config.global.holeSize}} className="drop-shadow-xl pointer-events-none" draggable="false" /> : 
+                                                                <div style={{
+                                                                    width: config.global.holeSize, 
+                                                                    height: config.global.holeSize * 0.35, 
+                                                                    backgroundColor: getRgba(config.global.holeColor || '#000000', config.global.holeOpacity !== undefined ? config.global.holeOpacity : 0.7)
+                                                                }} className="rounded-[100%] shadow-inner pointer-events-none"></div>
+                                                            }
+                                                        </div>
+                                                        <div 
+                                                            className={`bg-yellow-400 text-purple-900 text-[10px] px-2 py-1 rounded shadow-md font-bold select-none absolute -bottom-8 flex flex-col items-center gap-1 pointer-events-auto cursor-grab active:cursor-grabbing transition-transform hover:scale-105`}
+                                                            onPointerDown={(e) => handlePointerDown(sp.id, 'hole', e)}
+                                                        >
+                                                            Норка (Drag)
+                                                            <div className="flex gap-1 pointer-events-auto">
+                                                                <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); updateSpawnPoint(sp.id, 'zIndex', (sp.zIndex || 0) - 1); }} className="bg-black/10 hover:bg-black/20 px-2 py-1 rounded">- Z</button>
+                                                                <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); updateSpawnPoint(sp.id, 'zIndex', (sp.zIndex || 0) + 1); }} className="bg-black/10 hover:bg-black/20 px-2 py-1 rounded">+ Z</button>
+                                                            </div>
+                                                        </div>
+                                                        <button onPointerDown={(e) => e.stopPropagation()} onClick={(e) => removeSpawnPoint(sp.id, e)} className="absolute -top-6 -right-6 bg-red-500 hover:bg-red-600 text-white rounded-full w-8 h-8 flex items-center justify-center pointer-events-auto transition shadow-lg z-50">X</button>
+                                                    </div>
+                                                </React.Fragment>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {activeTab === 'start' && (
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 p-8 text-center z-10">
+                                        <h1 style={{color: config.pages.start.titleColor, fontFamily: config.pages.start.fontFamily, fontSize: `${config.pages.start.titleFontSize || 48}px`, fontWeight: 900, textShadow: '2px 2px 4px rgba(0,0,0,0.5)', margin: '0 0 10px 0'}}>{config.pages.start.title}</h1>
+                                        <p style={{fontFamily: config.pages.start.fontFamily, fontSize: `${config.pages.start.subtitleFontSize || 24}px`, color: '#fff', marginBottom: '20px'}}>{config.pages.start.subtitle}</p>
+                                        <button style={{
+                                            background: config.pages.start.btnBg || '#facc15', color: config.pages.start.btnColor || '#4c1d95', fontSize: `${config.pages.start.btnFontSize || 24}px`, fontFamily: config.pages.start.fontFamily,
+                                            padding: `${config.pages.start.btnPaddingY || 15}px ${config.pages.start.btnPaddingX || 30}px`, fontWeight: 'bold', border: 'none', borderBottom: '4px solid rgba(0,0,0,0.2)', borderRadius: '15px', marginTop: '20px'
+                                        }}>{config.pages.start.buttonText}</button>
+                                    </div>
+                                )}
+
+                                {activeTab === 'game' && (
+                                    <iframe srcDoc={generateHTML()} className="absolute inset-0 w-full h-full border-none z-10 bg-transparent" title="Live Game Preview" />
+                                )}
+
+                                {activeTab === 'end' && (
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 p-8 text-center z-10">
+                                        <div style={{ background: 'rgba(255,255,255,0.95)', padding: '30px', borderRadius: '20px', maxWidth: '500px', width: '90%', maxHeight: '90vh', overflowY: 'auto', color: '#333', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+                                            <h1 style={{ color: config.pages.end.color, fontSize: `${config.pages.end.sloganFontSize || 36}px`, fontFamily: config.pages.end.fontFamily, fontWeight: 900, marginBottom: '10px' }}>{config.pages.end.slogan}</h1>
+                                            <p style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '10px' }}>Final Score: 120</p>
+                                            
+                                            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', alignItems: 'center', flexWrap: 'wrap', margin: '15px 0' }}>
+                                                {config.pages.end.rewardImage && <img src={config.pages.end.rewardImage} style={{ maxHeight: '120px', objectFit: 'contain' }} alt="Reward" />}
+                                                <div style={{ width: '120px', height: '120px', border: '4px solid #fff', borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.1)', background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column' }}>
+                                                    <span style={{ fontSize: '30px' }}>📱</span>
+                                                    <span style={{ fontSize: '10px', fontWeight: 'bold', color: '#6b7280' }}>QR Preview</span>
+                                                </div>
+                                            </div>
+                                            
+                                            <p style={{ color: config.pages.end.color, fontSize: `${config.pages.end.rewardFontSize || 18}px`, fontFamily: config.pages.end.fontFamily, margin: '15px 0', fontStyle: 'italic' }}>{config.pages.end.rewardText}</p>
+                                            <button style={{
+                                                background: config.pages.end.btnBg || '#a855f7', color: config.pages.end.btnColor || '#ffffff', fontSize: `${config.pages.end.btnFontSize || 20}px`, fontFamily: config.pages.end.fontFamily,
+                                                padding: `${config.pages.end.btnPaddingY || 12}px ${config.pages.end.btnPaddingX || 32}px`, fontWeight: 'bold', border: 'none', borderBottom: '4px solid rgba(0,0,0,0.2)', borderRadius: '15px', marginTop: '20px'
+                                            }}>PLAY AGAIN</button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
